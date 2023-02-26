@@ -17,21 +17,37 @@ using valijson::adapters::RapidJsonAdapter;
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
+    size_t kMaxSchemaFileSize = 1024;
     FuzzedDataProvider fdp(data, size);
     if (size < 3)
         return 0;
     // Create a file per thread so that the fuzzer can be run in parralell.
-    char input_file[256];
-    sprintf(input_file, "/tmp/libfuzzer-%zu.json",
+    char schema_input_file[256];
+    sprintf(schema_input_file, "/tmp/libfuzzer-%zu.json",
             std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    FILE *fp = fopen(input_file, "wb");
-    if (!fp)
+    FILE *schema_fp = fopen(schema_input_file, "wb");
+
+    char to_validate_input_file[256];
+    sprintf(to_validate_input_file, "/tmp/libfuzzer-to-validate-%zu.json",
+            std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    FILE *to_validate_fp = fopen(to_validate_input_file, "wb");
+    if (!schema_fp || !to_validate_fp) {
         return 0;
-    fwrite(data, size, 1, fp);
-    fclose(fp);
+    }
+    {
+        std::vector<uint8_t> schema_data = fdp.ConsumeBytes<uint8_t>(
+            fdp.ConsumeIntegralInRange<int>(0, kMaxSchemaFileSize));
+        fwrite(schema_data.data(), schema_data.size(), 1, schema_fp);
+
+        std::vector<uint8_t> to_validate = fdp.ConsumeBytes<uint8_t>(
+            fdp.ConsumeIntegralInRange<int>(0, kMaxSchemaFileSize));
+        fwrite(to_validate.data(), to_validate.size(), 1, schema_fp);
+    }
+    fclose(schema_fp);
+    fclose(to_validate_fp);
 
     rapidjson::Document schemaDocument;
-    if (!valijson::utils::loadDocument(input_file, schemaDocument)) {
+    if (!valijson::utils::loadDocument(schema_input_file, schemaDocument)) {
         return 1;
     }
 
@@ -41,10 +57,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     try {
         parser.populateSchema(schemaDocumentAdapter, schema);
     } catch (std::exception &e) {
-        unlink(input_file);
+        unlink(schema_input_file);
+        unlink(to_validate_input_file);
         return 1;
     }
 
-    unlink(input_file);
+    rapidjson::Document myTargetDoc;
+    if (!valijson::utils::loadDocument(to_validate_input_file, myTargetDoc)) {
+        return 1;
+    }
+
+    unlink(schema_input_file);
+    unlink(to_validate_input_file);
     return 1;
 }
